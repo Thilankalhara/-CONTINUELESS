@@ -12,9 +12,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.0/CONTINUELESS-1.1.0-win-x64.exe"><img alt="Download CONTINUELESS for Windows" src="https://img.shields.io/badge/Download-Windows-0078D4?logo=windows&logoColor=white"></a>
-  <a href="https://github.com/Thilankalhara/-CONTINUELESS/releases/tag/v1.1.0"><img alt="Download CONTINUELESS for macOS" src="https://img.shields.io/badge/Download-macOS-333333?logo=apple&logoColor=white"></a>
-  <a href="https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.0/CONTINUELESS-1.1.0-linux-x86_64.AppImage"><img alt="Download CONTINUELESS for Linux" src="https://img.shields.io/badge/Download-Linux-FCC624?logo=linux&logoColor=black"></a>
+  <a href="https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.1/CONTINUELESS-1.1.1-win-x64.exe"><img alt="Download CONTINUELESS for Windows" src="https://img.shields.io/badge/Download-Windows-0078D4?logo=windows&logoColor=white"></a>
+  <a href="https://github.com/Thilankalhara/-CONTINUELESS/releases/tag/v1.1.1"><img alt="Download CONTINUELESS for macOS" src="https://img.shields.io/badge/Download-macOS-333333?logo=apple&logoColor=white"></a>
+  <a href="https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.1/CONTINUELESS-1.1.1-linux-x86_64.AppImage"><img alt="Download CONTINUELESS for Linux" src="https://img.shields.io/badge/Download-Linux-FCC624?logo=linux&logoColor=black"></a>
 </p>
 
 Switching between AI coding assistants can mean losing the project context you have already explained: how the architecture fits together, what has been tried, and what still needs doing. CONTINUELESS is a local application that gives that context a persistent home.
@@ -56,16 +56,16 @@ Your project files, index, and saved memories stay on your machine. CONTINUELESS
 
 ## Install the desktop app
 
-### CONTINUELESS v1.1.0
+### CONTINUELESS v1.1.1
 
 | Operating system | Download |
 | --- | --- |
-| Windows (64-bit) | [Download the Windows installer](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.0/CONTINUELESS-1.1.0-win-x64.exe) |
-| macOS (Apple Silicon) | [Download the DMG](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.0/CONTINUELESS-1.1.0-mac-arm64.dmg) · [Download the ZIP](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.0/CONTINUELESS-1.1.0-mac-arm64.zip) |
-| macOS (Intel) | [Download the DMG](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.0/CONTINUELESS-1.1.0-mac-x64.dmg) · [Download the ZIP](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.0/CONTINUELESS-1.1.0-mac-x64.zip) |
-| Linux (64-bit) | [Download the AppImage](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.0/CONTINUELESS-1.1.0-linux-x86_64.AppImage) · [Download the DEB package](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.0/CONTINUELESS-1.1.0-linux-amd64.deb) |
+| Windows (64-bit) | [Download the Windows installer](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.1/CONTINUELESS-1.1.1-win-x64.exe) |
+| macOS (Apple Silicon) | [Download the DMG](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.1/CONTINUELESS-1.1.1-mac-arm64.dmg) · [Download the ZIP](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.1/CONTINUELESS-1.1.1-mac-arm64.zip) |
+| macOS (Intel) | [Download the DMG](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.1/CONTINUELESS-1.1.1-mac-x64.dmg) · [Download the ZIP](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.1/CONTINUELESS-1.1.1-mac-x64.zip) |
+| Linux (64-bit) | [Download the AppImage](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.1/CONTINUELESS-1.1.1-linux-x86_64.AppImage) · [Download the DEB package](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.1.1/CONTINUELESS-1.1.1-linux-amd64.deb) |
 
-See the [full v1.1.0 release page](https://github.com/Thilankalhara/-CONTINUELESS/releases/tag/v1.1.0) for all downloads and release notes. If an asset is not available immediately, wait for the cross-platform release build to finish, or check the [releases page](https://github.com/Thilankalhara/-CONTINUELESS/releases) for the latest version. The earlier [v1.0.0 release](https://github.com/Thilankalhara/-CONTINUELESS/releases/tag/v1.0.0) remains available.
+See the [full v1.1.1 release page](https://github.com/Thilankalhara/-CONTINUELESS/releases/tag/v1.1.1) for all downloads and release notes. If an asset is not available immediately, wait for the cross-platform release build to finish, or check the [releases page](https://github.com/Thilankalhara/-CONTINUELESS/releases) for the latest version. Earlier [v1.1.0](https://github.com/Thilankalhara/-CONTINUELESS/releases/tag/v1.1.0) and [v1.0.0](https://github.com/Thilankalhara/-CONTINUELESS/releases/tag/v1.0.0) releases remain available.
 
 Install or open the download, launch CONTINUELESS, and connect a project folder from the welcome screen. The desktop app runs its local API itself; you do not need to keep a terminal open or install Node.js.
 
@@ -131,7 +131,7 @@ The same folder can be reopened from the recent-project list the next time you r
 2. **Capture context as you work.** Select **New memory** or **Capture memory**, choose a type, and write a descriptive title and note. Record decisions with their reasoning, checkpoints with completed and remaining work, bugs with reproduction details, and failed approaches with what you learned.
 3. **Find information again.** Search with at least two characters to look across indexed project files and saved memories. Press **Ctrl+K** (or **⌘K** on macOS) to focus search.
 4. **Keep the index current.** Choose **Sync index** after making changes. While the app is open, it also checks for project changes automatically.
-   Project history lists detected file additions, edits, and removals. Select a file to compare its previous and current indexed contents; additions appear green and removals red. Use **Copy diff** to copy the comparison.
+   Project history lists detected file additions, edits, and removals. Select a file to compare its previous and current indexed contents; additions appear green and removals red, and long unchanged sections are folded to keep large-file diffs readable. Use **Copy diff** to copy the shown changes. Generated `release-*` folders are excluded from indexing and working-tree history. Choose **Clear history** to remove history events and saved file diffs; saved memories and indexed project files are kept.
 5. **Bring context to another tool or session.** Select **Export context** to refresh the index and download an AI-friendly Markdown handoff containing project overview and workflow sections from the README, package metadata and common commands when available, current status, your latest checkpoint and next steps, completed-work notes, open bugs, saved decisions, the 20 most recent Git commits, current changed-file names, and the indexed-file list. Open that file or paste it into your AI coding assistant when you start working in the project. Git details require Git and a Git repository. The summary uses project documentation and metadata; CONTINUELESS does not generate an AI-written summary or automatically send context to an AI assistant.
 
 ### A simple day-to-day workflow

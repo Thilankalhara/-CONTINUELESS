@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const app = express();
 const skippedDirectories = new Set([
   '.git', '.continueless', '.npm-cache', 'node_modules', 'vendor', 'dist', 'build', 'coverage',
+  'target', 'out', 'bin', 'obj', 'release',
   '.next', '.nuxt', '.venv', 'venv', '__pycache__', '.idea', '.vscode',
 ]);
 const textExtensions = new Set([
@@ -21,7 +22,11 @@ const textExtensions = new Set([
   '.rs', '.sh', '.sql', '.svg', '.toml', '.ts', '.tsx', '.txt', '.vue',
   '.xml', '.yaml', '.yml', '.zsh', '.env', '.gitignore', '.dockerignore',
 ]);
-const maxIndexedBytes = 512 * 1024;
+const maxIndexedBytes = 2 * 1024 * 1024;
+
+function isGeneratedOutputPath(relativePath: string) {
+  return relativePath.split(/[\\/]/).some(segment => segment === 'release' || segment.startsWith('release-'));
+}
 
 const port = Number(process.env.PORT ?? 4175);
 const dataDir = path.resolve(process.env.CONTINUELESS_DATA_DIR ?? '.continueless');
@@ -110,7 +115,10 @@ async function getGitSummary(root: string) {
       execFileAsync('git', ['-C', root, 'log', '-1', '--format=%h|%s|%cr'], { windowsHide: true }),
       execFileAsync('git', ['-C', root, 'log', '-20', '--date=short', '--format=%h%x09%ad%x09%s'], { windowsHide: true }),
     ]);
-    const workingTreeChanges = status.split(/\r?\n/).filter(Boolean);
+    const workingTreeChanges = status.split(/\r?\n/).filter(Boolean)
+      .map(line => ({ line, path: line.slice(3) }))
+      .filter(change => !isGeneratedOutputPath(change.path))
+      .map(change => change.line);
     const lastCommit = log.trim().split('|');
     return {
       available: true,
@@ -140,7 +148,7 @@ async function listSourceFiles(root: string): Promise<string[]> {
       if (child.isSymbolicLink()) continue;
       const absolute = path.join(directory, child.name);
       if (child.isDirectory()) {
-        if (!skippedDirectories.has(child.name)) await visit(absolute);
+        if (!skippedDirectories.has(child.name) && !child.name.startsWith('release-')) await visit(absolute);
       } else if (child.isFile() && (textExtensions.has(path.extname(child.name).toLowerCase()) || child.name.startsWith('.'))) {
         found.push(absolute);
       }
@@ -190,7 +198,11 @@ async function indexProject(project: Project) {
     } catch { /* Files can disappear while indexing; the next scan reconciles them. */ }
   }
   const oldPaths = database.prepare('SELECT relative_path, content FROM files WHERE project_id = ?').all(project.id) as Array<{ relative_path: string; content: string }>;
-  const removed = oldPaths.filter(file => !seen.has(file.relative_path));
+  const generatedFiles = oldPaths.filter(file => isGeneratedOutputPath(file.relative_path));
+  const removeGenerated = database.prepare('DELETE FROM files WHERE project_id = ? AND relative_path = ?');
+  const removeGeneratedTransaction = database.transaction(() => generatedFiles.forEach(file => removeGenerated.run(project.id, file.relative_path)));
+  removeGeneratedTransaction();
+  const removed = oldPaths.filter(file => !seen.has(file.relative_path) && !isGeneratedOutputPath(file.relative_path));
   for (const file of removed) fileChanges.push({ path: file.relative_path, changeType: 'removed', before: file.content, after: '' });
   const remove = database.prepare('DELETE FROM files WHERE project_id = ? AND relative_path = ?');
   const removeTransaction = database.transaction(() => removed.forEach(file => remove.run(project.id, file.relative_path)));
@@ -303,6 +315,13 @@ app.get('/api/projects/:id/dashboard', async (request, response) => {
       (SELECT COUNT(*) FROM entries WHERE project_id = ? AND kind = 'checkpoint') AS checkpoints`,).get(project.id, project.id, project.id, project.id)),
   ]);
   response.json({ project, git, events, entries, stats });
+});
+
+app.delete('/api/projects/:id/history', (request, response) => {
+  const project = asProject(Number(request.params.id));
+  if (!project) return response.status(404).json({ error: 'Project not found.' });
+  const result = database.prepare('DELETE FROM events WHERE project_id = ?').run(project.id);
+  response.json({ cleared: result.changes });
 });
 
 app.get('/api/projects/:id/file-change', async (request, response) => {

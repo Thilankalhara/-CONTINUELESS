@@ -3,7 +3,7 @@ import {
   Activity, AlertCircle, ArrowDownToLine, ArrowRight, BookOpen, Check, CheckCircle2, Copy,
   ChevronDown, CircleDot, Clock3, Code2, FileCode2, FilePlus2, FolderGit2, GitBranch,
   GitCommitHorizontal, History, Lightbulb, LoaderCircle, Plus, RefreshCw, Search,
-  ShieldAlert, Sparkles, X,
+  ShieldAlert, Sparkles, Trash2, X,
 } from 'lucide-react';
 
 type EntryKind = 'decision' | 'checkpoint' | 'bug' | 'work' | 'failed';
@@ -11,7 +11,7 @@ type Entry = { id: number; kind: EntryKind; title: string; body: string; created
 type Project = { id: number; name: string; root_path: string; indexed_at: string | null; file_count: number; entry_count: number };
 type Event = { id: number; kind: string; summary: string; details: string; created_at: string };
 type FileChange = { relative_path: string; change_type: 'added' | 'changed' | 'removed'; before_content: string; after_content: string };
-type DiffLine = { type: 'context' | 'added' | 'removed'; text: string; oldLine?: number; newLine?: number };
+type DiffLine = { type: 'context' | 'added' | 'removed' | 'collapsed' | 'notice'; text: string; oldLine?: number; newLine?: number };
 type Dashboard = {
   project: Project; git: {
     available: boolean; branch: string | null; changedFiles: number;
@@ -69,10 +69,89 @@ function buildDiffLines(before: string, after: string): DiffLine[] {
   if (newLines[newLines.length - 1] === '') newLines.pop();
   const columns = newLines.length + 1;
   if ((oldLines.length + 1) * columns > 1_000_000) {
-    return [
-      ...oldLines.map((text, index) => ({ type: 'removed' as const, text, oldLine: index + 1 })),
-      ...newLines.map((text, index) => ({ type: 'added' as const, text, newLine: index + 1 })),
-    ];
+    const maxDistance = Math.min(oldLines.length + newLines.length, 1200);
+    const offset = maxDistance + 1;
+    let frontier = new Int32Array(maxDistance * 2 + 3);
+    frontier.fill(-1);
+    frontier[offset + 1] = 0;
+    const trace: Int32Array[] = [];
+    let finalDistance = -1;
+    for (let distance = 0; distance <= maxDistance; distance += 1) {
+      trace.push(frontier.slice());
+      for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+        const index = offset + diagonal;
+        const x = diagonal === -distance || (diagonal !== distance && frontier[index - 1] < frontier[index + 1])
+          ? frontier[index + 1]
+          : frontier[index - 1] + 1;
+        let oldIndex = x;
+        let newIndex = oldIndex - diagonal;
+        while (oldIndex < oldLines.length && newIndex < newLines.length && oldLines[oldIndex] === newLines[newIndex]) {
+          oldIndex += 1;
+          newIndex += 1;
+        }
+        frontier[index] = oldIndex;
+        if (oldIndex >= oldLines.length && newIndex >= newLines.length) {
+          finalDistance = distance;
+          break;
+        }
+      }
+      if (finalDistance >= 0) break;
+    }
+    if (finalDistance < 0) {
+      return [{ type: 'notice', text: 'This file has too many separate changes for a precise diff. Narrow the change or compare a smaller section.' }];
+    }
+    const operations: Array<{ type: 'context' | 'added' | 'removed'; text: string }> = [];
+    let oldIndex = oldLines.length;
+    let newIndex = newLines.length;
+    for (let distance = finalDistance; distance > 0; distance -= 1) {
+      const previous = trace[distance];
+      const diagonal = oldIndex - newIndex;
+      const previousDiagonal = diagonal === -distance || (diagonal !== distance && previous[offset + diagonal - 1] < previous[offset + diagonal + 1])
+        ? diagonal + 1
+        : diagonal - 1;
+      const previousOldIndex = previous[offset + previousDiagonal];
+      const previousNewIndex = previousOldIndex - previousDiagonal;
+      while (oldIndex > previousOldIndex && newIndex > previousNewIndex) {
+        operations.push({ type: 'context', text: oldLines[oldIndex - 1] });
+        oldIndex -= 1;
+        newIndex -= 1;
+      }
+      if (oldIndex === previousOldIndex) {
+        operations.push({ type: 'added', text: newLines[newIndex - 1] });
+        newIndex -= 1;
+      } else {
+        operations.push({ type: 'removed', text: oldLines[oldIndex - 1] });
+        oldIndex -= 1;
+      }
+    }
+    while (oldIndex > 0 && newIndex > 0) {
+      operations.push({ type: 'context', text: oldLines[oldIndex - 1] });
+      oldIndex -= 1;
+      newIndex -= 1;
+    }
+    while (oldIndex > 0) {
+      operations.push({ type: 'removed', text: oldLines[--oldIndex] });
+    }
+    while (newIndex > 0) {
+      operations.push({ type: 'added', text: newLines[--newIndex] });
+    }
+    operations.reverse();
+    let oldLine = 0;
+    let newLine = 0;
+    const lines = operations.map(operation => {
+      if (operation.type === 'context') {
+        oldLine += 1;
+        newLine += 1;
+        return { ...operation, oldLine, newLine };
+      }
+      if (operation.type === 'removed') {
+        oldLine += 1;
+        return { ...operation, oldLine };
+      }
+      newLine += 1;
+      return { ...operation, newLine };
+    });
+    return compactDiffLines(lines);
   }
   const lengths = new Uint32Array((oldLines.length + 1) * columns);
   for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
@@ -107,7 +186,30 @@ function buildDiffLines(before: string, after: string): DiffLine[] {
     lines.push({ type: 'added', text: newLines[newIndex], newLine: newIndex + 1 });
     newIndex += 1;
   }
-  return lines;
+  return compactDiffLines(lines);
+}
+
+function compactDiffLines(lines: DiffLine[]): DiffLine[] {
+  const changed = lines.flatMap((line, index) => line.type === 'added' || line.type === 'removed' ? [index] : []);
+  if (!changed.length) return [];
+  if (lines.length <= 100) return lines;
+  const ranges: Array<[number, number]> = [];
+  for (const index of changed) {
+    const start = Math.max(0, index - 3);
+    const end = Math.min(lines.length - 1, index + 3);
+    const last = ranges[ranges.length - 1];
+    if (last && start <= last[1] + 1) last[1] = Math.max(last[1], end);
+    else ranges.push([start, end]);
+  }
+  const compacted: DiffLine[] = [];
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    if (start > cursor) compacted.push({ type: 'collapsed', text: `… ${start - cursor} unchanged lines …` });
+    compacted.push(...lines.slice(start, end + 1));
+    cursor = end + 1;
+  }
+  if (cursor < lines.length) compacted.push({ type: 'collapsed', text: `… ${lines.length - cursor} unchanged lines …` });
+  return compacted;
 }
 
 function renderHistoryDetails(details: string, onOpenFile: (path: string, eventId: number) => void, eventId: number) {
@@ -294,13 +396,26 @@ function App() {
     const content = [
       `--- ${fileChange.relative_path}`,
       `+++ ${fileChange.relative_path}`,
-      ...fileDiffLines.map(line => `${line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '} ${line.text}`),
+      ...fileDiffLines.filter(line => line.type !== 'collapsed' && line.type !== 'notice')
+        .map(line => `${line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '} ${line.text}`),
     ].join('\n');
     try {
       await navigator.clipboard.writeText(content);
       setNotice('File diff copied to clipboard');
     } catch (reason) {
       setFileDiffCopyError(reason instanceof Error ? `Could not copy the diff: ${reason.message}` : 'Could not copy the diff to the clipboard.');
+    }
+  }
+
+  async function clearHistory() {
+    if (activeId === null || !window.confirm('Clear this project’s history and saved file diffs? Saved memories and indexed project files will not be deleted.')) return;
+    setError('');
+    try {
+      const result = await request<{ cleared: number }>(`/api/projects/${activeId}/history`, { method: 'DELETE' });
+      await loadDashboard(activeId);
+      setNotice(`Cleared ${result.cleared} history events. Saved memories and indexed files were kept.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not clear project history.');
     }
   }
 
@@ -395,7 +510,7 @@ function App() {
               </section>
 
               <section className="history-section" id="history">
-                <div className="section-title-row history-title"><div><p className="eyebrow">A CLEAR TRAIL FOR THE NEXT SESSION</p><h2>Project history</h2></div><span className="history-count">{dashboard?.events.length ?? 0} RECENT EVENTS</span></div>
+                <div className="section-title-row history-title"><div><p className="eyebrow">A CLEAR TRAIL FOR THE NEXT SESSION</p><h2>Project history</h2></div><div className="history-actions">{dashboard?.events.length ? <button className="text-button history-clear" onClick={() => void clearHistory()}><Trash2 size={13} /> Clear history</button> : null}<span className="history-count">{dashboard?.events.length ?? 0} RECENT EVENTS</span></div></div>
                 {dashboard?.git.available && <div className="history-working-tree">
                   <div className="history-working-tree-heading"><strong>Updated files</strong><span>{dashboard.git.changedFiles} FILES</span></div>
                   {dashboard.git.workingTreeChanges.length
@@ -419,14 +534,16 @@ function App() {
         <section className="diff-dialog" role="dialog" aria-modal="true" aria-labelledby="diff-title">
           <div className="diff-dialog-header">
             <div><p className="eyebrow">FILE CHANGE · {fileChange.change_type.toUpperCase()}</p><h2 id="diff-title">{fileChange.relative_path}</h2></div>
-            <div className="diff-dialog-actions"><button type="button" className="subtle-button" onClick={() => void copyFileDiff()} disabled={fileDiffLoading || Boolean(fileDiffError)}><Copy size={14} /> Copy diff</button><button type="button" className="dialog-close" onClick={closeFileChange} aria-label="Close diff"><X size={18} /></button></div>
+            <div className="diff-dialog-actions"><button type="button" className="subtle-button" onClick={() => void copyFileDiff()} disabled={fileDiffLoading || Boolean(fileDiffError) || fileDiffLines.some(line => line.type === 'notice')}><Copy size={14} /> Copy diff</button><button type="button" className="dialog-close" onClick={closeFileChange} aria-label="Close diff"><X size={18} /></button></div>
           </div>
           {fileDiffError
             ? <div className="diff-message diff-error" role="alert">{fileDiffError}</div>
             : fileDiffLoading
               ? <div className="diff-message">Loading file changes…</div>
               : fileDiffLines.length
-                ? <><div className="diff-code" role="region" aria-label={`Changes in ${fileChange.relative_path}`}>{fileDiffLines.map((line, index) => <div className={`diff-line diff-${line.type}`} key={`${line.type}-${index}`}><span className="diff-line-number">{line.oldLine ?? ''}</span><span className="diff-line-number">{line.newLine ?? ''}</span><span className="diff-line-marker">{line.type === 'added' ? '+' : line.type === 'removed' ? '−' : ' '}</span><code>{line.text || ' '}</code></div>)}</div>{fileDiffCopyError && <div className="diff-message diff-error" role="alert">{fileDiffCopyError}</div>}</>
+                ? <><div className="diff-code" role="region" aria-label={`Changes in ${fileChange.relative_path}`}>{fileDiffLines.map((line, index) => line.type === 'collapsed' || line.type === 'notice'
+                  ? <div className={`diff-message diff-${line.type}`} key={`${line.type}-${index}`}>{line.text}</div>
+                  : <div className={`diff-line diff-${line.type}`} key={`${line.type}-${index}`}><span className="diff-line-number">{line.oldLine ?? ''}</span><span className="diff-line-number">{line.newLine ?? ''}</span><span className="diff-line-marker">{line.type === 'added' ? '+' : line.type === 'removed' ? '−' : ' '}</span><code>{line.text || ' '}</code></div>)}</div>{fileDiffCopyError && <div className="diff-message diff-error" role="alert">{fileDiffCopyError}</div>}</>
                 : <div className="diff-message">This file has no text lines to display.</div>}
         </section>
       </div>}
