@@ -51,7 +51,7 @@ Your project files, index, and saved memories stay on your machine. CONTINUELESS
 | Windows (64-bit) | [Download the Windows installer](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-win-x64.exe) |
 | macOS (Apple Silicon) | [Download the DMG](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-mac-arm64.dmg) · [Download the ZIP](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-mac-arm64.zip) |
 | macOS (Intel) | [Download the DMG](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-mac-x64.dmg) · [Download the ZIP](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-mac-x64.zip) |
-| Linux | [Download the AppImage](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-linux-x64.AppImage) · [Download the DEB package](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-linux-x64.deb) |
+| Linux (64-bit) | [Download the AppImage](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-linux-x86_64.AppImage) · [Download the DEB package](https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-linux-amd64.deb) |
 
 See the [full release page](https://github.com/Thilankalhara/-CONTINUELESS/releases/tag/v1.0.0) for all downloads and release notes. If a download is not available yet, wait for the cross-platform release build to finish, or check the [releases page](https://github.com/Thilankalhara/-CONTINUELESS/releases) for the latest version.
 

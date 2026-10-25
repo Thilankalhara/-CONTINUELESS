@@ -68,9 +68,26 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          overwrite_files: true
           files: |
-            installers/**/*.exe
+            installers/**/CONTINUELESS-*.exe
             installers/**/*.dmg
             installers/**/*.zip
             installers/**/*.AppImage
             installers/**/*.deb
+
+      - name: Remove Windows installer support files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = context.ref.replace('refs/tags/', '');
+            const { data: releases } = await github.rest.repos.listReleases({ owner, repo });
+            const release = releases.find(item => item.tag_name === tag);
+            if (!release) throw new Error(`Release for ${tag} was not found.`);
+
+            for (const asset of release.assets) {
+              if (asset.name === 'CONTINUELESS.exe' || asset.name === 'elevate.exe') {
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: asset.id });
+              }
+            }
