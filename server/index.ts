@@ -29,6 +29,31 @@ function isGeneratedOutputPath(relativePath: string) {
   return relativePath.split(/[\\/]/).some(segment => segment === 'release' || segment.startsWith('release-'));
 }
 
+function isLikelySecretFile(relativePath: string) {
+  const name = path.basename(relativePath).toLowerCase();
+  return /^\.env(?:\.|$)/.test(name)
+    || /\.(?:pem|key|p12|pfx)$/.test(name)
+    || /(?:^|[._-])(?:secret|secrets|credential|credentials)(?:[._-]|$)/.test(name);
+}
+
+function markdownCodeFence(content: string) {
+  let longestBacktickRun = 0;
+  for (const match of content.matchAll(/`+/g)) longestBacktickRun = Math.max(longestBacktickRun, match[0].length);
+  return '`'.repeat(Math.max(3, longestBacktickRun + 1));
+}
+
+function sourceLanguage(relativePath: string) {
+  const extension = path.extname(relativePath).slice(1).toLowerCase();
+  const languages: Record<string, string> = {
+    c: 'c', cc: 'cpp', cpp: 'cpp', cs: 'csharp', css: 'css', go: 'go', h: 'c', hpp: 'cpp',
+    html: 'html', ini: 'ini', java: 'java', js: 'javascript', jsx: 'jsx', json: 'json',
+    md: 'markdown', mjs: 'javascript', php: 'php', py: 'python', rb: 'ruby', rs: 'rust',
+    sh: 'bash', sql: 'sql', svg: 'xml', toml: 'toml', ts: 'typescript', tsx: 'tsx',
+    txt: 'text', vue: 'vue', xml: 'xml', yaml: 'yaml', yml: 'yaml', zsh: 'bash',
+  };
+  return languages[extension] ?? 'text';
+}
+
 const port = Number(process.env.PORT ?? 4175);
 const dataDir = path.resolve(process.env.CONTINUELESS_DATA_DIR ?? '.continueless');
 mkdirSync(dataDir, { recursive: true });
@@ -618,6 +643,43 @@ app.get('/api/projects/:id/export', async (request, response) => {
   }
   lines.push('', '---', 'Generated locally by CONTINUELESS.');
   response.type('text/markdown').send(lines.join('\n'));
+});
+
+app.get('/api/projects/:id/export-code', async (request, response) => {
+  const project = asProject(Number(request.params.id));
+  if (!project) return response.status(404).json({ error: 'Project not found.' });
+  try {
+    const indexing = await indexProject(project);
+    const files = database.prepare('SELECT relative_path, content FROM files WHERE project_id = ? ORDER BY relative_path')
+      .all(project.id) as Array<{ relative_path: string; content: string }>;
+    const exportableFiles = files.filter(file => !isGeneratedOutputPath(file.relative_path) && !isLikelySecretFile(file.relative_path));
+    const skippedSecretFiles = files.filter(file => isLikelySecretFile(file.relative_path)).map(file => file.relative_path);
+    const lines = [
+      `# Complete source export: ${project.name}`,
+      '',
+      `Project root: ${project.root_path}`,
+      `Files included: ${exportableFiles.length}`,
+      '',
+      'Each section names a file by its path relative to the project root. Binary files, generated release folders, and files excluded from text indexing are not included.',
+      'Review this export for credentials or other private information before sharing it with an AI service.',
+      ...(skippedSecretFiles.length ? ['', '## Excluded files that may contain secrets', ...skippedSecretFiles.map(file => `- \`${file}\``)] : []),
+    ];
+    for (const file of exportableFiles) {
+      const fence = markdownCodeFence(file.content);
+      lines.push(
+        '',
+        `## File: \`${file.relative_path.replace(/`/g, '\\`')}\``,
+        '',
+        `${fence}${sourceLanguage(file.relative_path)}`,
+        file.content.replace(/\r?\n$/, ''),
+        fence,
+      );
+    }
+    lines.push('', '---', `Generated locally by CONTINUELESS. Index refreshed at ${indexing.indexedAt}.`);
+    response.type('text/markdown').send(lines.join('\n'));
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? `Could not export project source: ${error.message}` : 'Could not export project source.' });
+  }
 });
 
 type ServerOptions = { port?: number; webRoot?: string };

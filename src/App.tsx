@@ -38,6 +38,15 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return data as T;
 }
 
+function downloadMarkdown(content: string, filename: string) {
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/markdown' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function timeAgo(date: string) {
   const timestamp = new Date(date.includes('T') ? date : `${date.replace(' ', 'T')}Z`).getTime();
   const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
@@ -443,14 +452,30 @@ function App() {
     if (activeId === null) return;
     try {
       const response = await fetch(`/api/projects/${activeId}/export`);
-      if (!response.ok) throw new Error('Export could not be prepared.');
+      if (!response.ok) {
+        const result = await response.json() as { error?: string };
+        throw new Error(result.error || 'Export could not be prepared.');
+      }
       const content = await response.text();
-      const url = URL.createObjectURL(new Blob([content], { type: 'text/markdown' }));
-      const link = document.createElement('a');
-      link.href = url; link.download = `${dashboard?.project.name ?? 'project'}-context.md`; link.click();
-      URL.revokeObjectURL(url);
+      downloadMarkdown(content, `${dashboard?.project.name ?? 'project'}-context.md`);
       setNotice('Context exported as Markdown');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Export failed.'); }
+  }
+
+  async function exportProjectCode() {
+    if (activeId === null) return;
+    try {
+      const response = await fetch(`/api/projects/${activeId}/export-code`);
+      if (!response.ok) {
+        const result = await response.json() as { error?: string };
+        throw new Error(result.error || 'Project source export could not be prepared.');
+      }
+      const content = await response.text();
+      downloadMarkdown(content, `${dashboard?.project.name ?? 'project'}-source.md`);
+      setNotice('All indexed project source exported as Markdown');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Project source export failed.');
+    }
   }
 
   useEffect(() => {
@@ -517,7 +542,7 @@ function App() {
               </section>
 
               <section className="knowledge-section">
-                <div className="section-title-row"><div><p className="eyebrow">YOUR PROJECT, REMEMBERED</p><h2>Knowledge base</h2></div><button className="text-button" onClick={exportContext}><ArrowDownToLine size={15} /> Export context</button></div>
+                <div className="section-title-row"><div><p className="eyebrow">YOUR PROJECT, REMEMBERED</p><h2>Knowledge base</h2></div><div className="export-actions"><button className="text-button" onClick={exportContext}><ArrowDownToLine size={15} /> Export context</button><button className="text-button" onClick={exportProjectCode}><FileCode2 size={15} /> Export all code</button></div></div>
                 <div className="knowledge-grid">
                   <div className="search-panel">
                     <div className="search-heading"><Search size={16} /><h3>Search project knowledge</h3><span className="search-shortcut">LOCAL INDEX</span></div>
