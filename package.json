@@ -2,7 +2,10 @@
   "name": "continueless",
   "version": "1.0.0",
   "description": "A local-first project memory for AI coding agents.",
-  "author": "Thilankalhara",
+  "author": {
+    "name": "Thilankalhara",
+    "email": "174016013+Thilankalhara@users.noreply.github.com"
+  },
   "license": "MIT",
   "private": true,
   "type": "module",
