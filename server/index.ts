@@ -1,18 +1,16 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
+import type { Server } from 'node:http';
 import express from 'express';
 import Database from 'better-sqlite3';
 
 const execFileAsync = promisify(execFile);
 const app = express();
-const port = Number(process.env.PORT ?? 4175);
-const dataDir = path.resolve(process.env.CONTINUELESS_DATA_DIR ?? '.continueless');
-mkdirSync(dataDir, { recursive: true });
-const database = new Database(path.join(dataDir, 'memory.sqlite'));
 const skippedDirectories = new Set([
   '.git', '.continueless', '.npm-cache', 'node_modules', 'vendor', 'dist', 'build', 'coverage',
   '.next', '.nuxt', '.venv', 'venv', '__pycache__', '.idea', '.vscode',
@@ -24,6 +22,11 @@ const textExtensions = new Set([
   '.xml', '.yaml', '.yml', '.zsh', '.env', '.gitignore', '.dockerignore',
 ]);
 const maxIndexedBytes = 512 * 1024;
+
+const port = Number(process.env.PORT ?? 4175);
+const dataDir = path.resolve(process.env.CONTINUELESS_DATA_DIR ?? '.continueless');
+mkdirSync(dataDir, { recursive: true });
+const database = new Database(path.join(dataDir, 'memory.sqlite'));
 
 database.pragma('journal_mode = WAL');
 database.pragma('foreign_keys = ON');
@@ -270,7 +273,36 @@ app.get('/api/projects/:id/export', (request, response) => {
   response.type('text/markdown').send(lines.join('\n'));
 });
 
-app.listen(port, '127.0.0.1', () => {
-  console.log(`CONTINUELESS API listening at http://127.0.0.1:${port}`);
+type ServerOptions = { port?: number; webRoot?: string };
+
+export async function startServer(options: ServerOptions = {}): Promise<Server> {
+  const selectedPort = options.port ?? port;
+  const listener = await new Promise<Server>((resolve, reject) => {
+    const server = app.listen(selectedPort, '127.0.0.1', () => resolve(server));
+    server.once('error', reject);
+  });
+
+  if (options.webRoot) {
+    const webRoot = path.resolve(options.webRoot);
+    app.use(express.static(webRoot));
+    app.use((request, response, next) => {
+      if (request.method !== 'GET') return next();
+      if (request.path === '/api' || request.path.startsWith('/api/')) return next();
+      return response.sendFile(path.join(webRoot, 'index.html'));
+    });
+  }
+
+  listener.once('close', () => database.close());
+  const address = listener.address();
+  const listeningPort = typeof address === 'object' && address ? address.port : selectedPort;
+  console.log(`CONTINUELESS API listening at http://127.0.0.1:${listeningPort}`);
   console.log(`Local memory database: ${path.join(dataDir, 'memory.sqlite')}`);
-});
+  return listener;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  void startServer().catch(error => {
+    console.error('Could not start the CONTINUELESS API:', error);
+    process.exitCode = 1;
+  });
+}

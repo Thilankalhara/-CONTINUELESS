@@ -1,13 +1,25 @@
 {
   "name": "continueless",
-  "private": true,
   "version": "1.0.0",
+  "description": "A local-first project memory for AI coding agents.",
+  "author": "Thilankalhara",
+  "license": "MIT",
+  "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch server/index.ts",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "desktop": "npm run build && electron-builder install-app-deps && electron .",
+    "dist": "npm run build && electron-builder --publish never",
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb --publish never",
     "start": "tsx server/index.ts",
     "check": "tsc -b --pretty"
   },
@@ -15,7 +27,7 @@
     "@fontsource/dm-mono": "^5.2.6",
     "@fontsource/dm-sans": "^5.2.6",
     "@fontsource/manrope": "^5.2.6",
-    "better-sqlite3": "^12.2.0",
+    "better-sqlite3": "^13.0.3",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.0",
@@ -29,8 +41,51 @@
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^4.6.0",
     "concurrently": "^9.2.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
     "tsx": "^4.20.3",
     "typescript": "~5.8.3",
     "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "com.thilankalhara.continueless",
+    "productName": "CONTINUELESS",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-server/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "npmRebuild": true,
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    }
   }
 }

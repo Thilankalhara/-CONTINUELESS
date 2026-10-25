@@ -1,5 +1,7 @@
 node_modules/
 dist/
+dist-server/
+release/
 .continueless/
 .npm-cache/
 *.tsbuildinfo
