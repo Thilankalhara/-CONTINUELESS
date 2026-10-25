@@ -11,6 +11,12 @@
   <img alt="React 19" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-win-x64.exe"><img alt="Download CONTINUELESS for Windows" src="https://img.shields.io/badge/Download-Windows-0078D4?logo=windows&logoColor=white"></a>
+  <a href="https://github.com/Thilankalhara/-CONTINUELESS/releases/tag/v1.0.0"><img alt="Download CONTINUELESS for macOS" src="https://img.shields.io/badge/Download-macOS-333333?logo=apple&logoColor=white"></a>
+  <a href="https://github.com/Thilankalhara/-CONTINUELESS/releases/download/v1.0.0/CONTINUELESS-1.0.0-linux-x86_64.AppImage"><img alt="Download CONTINUELESS for Linux" src="https://img.shields.io/badge/Download-Linux-FCC624?logo=linux&logoColor=black"></a>
+</p>
+
 Switching between AI coding assistants can mean losing the project context you have already explained: how the architecture fits together, what has been tried, and what still needs doing. CONTINUELESS is a local application that gives that context a persistent home.
 
 Connect a project folder to index its text files, record decisions and work history, and search files and notes together. When you switch tools or sessions, export the project context as Markdown and provide it to your AI coding assistant.
