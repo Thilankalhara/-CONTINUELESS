@@ -64,6 +64,16 @@ database.exec(`
     details TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS file_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    relative_path TEXT NOT NULL,
+    change_type TEXT NOT NULL CHECK(change_type IN ('added','changed','removed')),
+    before_content TEXT NOT NULL,
+    after_content TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS file_changes_project_path ON file_changes(project_id, relative_path, id DESC);
   CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
     project_id UNINDEXED, record_type UNINDEXED, record_id UNINDEXED,
     title, body, path UNINDEXED
@@ -76,8 +86,8 @@ type Project = { id: number; name: string; root_path: string; created_at: string
 type EntryKind = 'decision' | 'checkpoint' | 'bug' | 'work' | 'failed';
 
 function addEvent(projectId: number, kind: string, summary: string, details = '') {
-  database.prepare('INSERT INTO events(project_id, kind, summary, details) VALUES (?, ?, ?, ?)')
-    .run(projectId, kind, summary, details);
+  return Number(database.prepare('INSERT INTO events(project_id, kind, summary, details) VALUES (?, ?, ?, ?)')
+    .run(projectId, kind, summary, details).lastInsertRowid);
 }
 
 function refreshProjectSearch(projectId: number) {
@@ -94,20 +104,30 @@ function refreshProjectSearch(projectId: number) {
 
 async function getGitSummary(root: string) {
   try {
-    const [{ stdout: branch }, { stdout: status }, { stdout: log }] = await Promise.all([
+    const [{ stdout: branch }, { stdout: status }, { stdout: log }, { stdout: history }] = await Promise.all([
       execFileAsync('git', ['-C', root, 'branch', '--show-current'], { windowsHide: true }),
-      execFileAsync('git', ['-C', root, 'status', '--porcelain'], { windowsHide: true }),
+      execFileAsync('git', ['-C', root, 'status', '--short', '--untracked-files=all'], { windowsHide: true }),
       execFileAsync('git', ['-C', root, 'log', '-1', '--format=%h|%s|%cr'], { windowsHide: true }),
+      execFileAsync('git', ['-C', root, 'log', '-20', '--date=short', '--format=%h%x09%ad%x09%s'], { windowsHide: true }),
     ]);
+    const workingTreeChanges = status.split(/\r?\n/).filter(Boolean);
     const lastCommit = log.trim().split('|');
     return {
       available: true,
       branch: branch.trim() || 'detached HEAD',
-      changedFiles: status.trim() ? status.trim().split(/\r?\n/).length : 0,
+      changedFiles: workingTreeChanges.length,
+      workingTreeChanges: workingTreeChanges.map(line => ({
+        status: line.slice(0, 2).trim(),
+        path: line.slice(3),
+      })),
       lastCommit: lastCommit.length === 3 ? { hash: lastCommit[0], subject: lastCommit[1], age: lastCommit[2] } : null,
+      recentCommits: history.trim().split(/\r?\n/).filter(Boolean).map(line => {
+        const [hash, date, ...subject] = line.split('\t');
+        return { hash, date, subject: subject.join('\t') };
+      }),
     };
   } catch {
-    return { available: false, branch: null, changedFiles: 0, lastCommit: null };
+    return { available: false, branch: null, changedFiles: 0, workingTreeChanges: [], lastCommit: null, recentCommits: [] };
   }
 }
 
@@ -141,6 +161,9 @@ async function indexProject(project: Project) {
   `);
   let added = 0;
   let changed = 0;
+  const addedPaths: string[] = [];
+  const changedPaths: string[] = [];
+  const fileChanges: Array<{ path: string; changeType: 'added' | 'changed' | 'removed'; before: string; after: string }> = [];
   for (const absolute of candidates) {
     try {
       const info = await stat(absolute);
@@ -148,31 +171,94 @@ async function indexProject(project: Project) {
       const buffer = await readFile(absolute);
       if (buffer.includes(0)) continue;
       const relative = path.relative(project.root_path, absolute).split(path.sep).join('/');
-      const existing = database.prepare('SELECT hash FROM files WHERE project_id = ? AND relative_path = ?').get(project.id, relative) as { hash: string } | undefined;
+      const existing = database.prepare('SELECT hash, content FROM files WHERE project_id = ? AND relative_path = ?').get(project.id, relative) as { hash: string; content: string } | undefined;
       const content = buffer.toString('utf8');
       const hash = createHash('sha256').update(buffer).digest('hex');
       seen.add(relative);
       if (!existing || existing.hash !== hash) {
         upsert.run(project.id, relative, content, hash, info.size, info.mtime.toISOString());
-        if (existing) changed += 1;
-        else added += 1;
+        if (existing) {
+          changed += 1;
+          changedPaths.push(relative);
+          fileChanges.push({ path: relative, changeType: 'changed', before: existing.content, after: content });
+        } else {
+          added += 1;
+          addedPaths.push(relative);
+          fileChanges.push({ path: relative, changeType: 'added', before: '', after: content });
+        }
       }
     } catch { /* Files can disappear while indexing; the next scan reconciles them. */ }
   }
-  const oldPaths = database.prepare('SELECT relative_path FROM files WHERE project_id = ?').all(project.id) as Array<{ relative_path: string }>;
+  const oldPaths = database.prepare('SELECT relative_path, content FROM files WHERE project_id = ?').all(project.id) as Array<{ relative_path: string; content: string }>;
   const removed = oldPaths.filter(file => !seen.has(file.relative_path));
+  for (const file of removed) fileChanges.push({ path: file.relative_path, changeType: 'removed', before: file.content, after: '' });
   const remove = database.prepare('DELETE FROM files WHERE project_id = ? AND relative_path = ?');
   const removeTransaction = database.transaction(() => removed.forEach(file => remove.run(project.id, file.relative_path)));
   removeTransaction();
   const summary = `${added} added, ${changed} changed, ${removed.length} removed`;
   database.prepare("UPDATE projects SET indexed_at = datetime('now') WHERE id = ?").run(project.id);
-  if (added || changed || removed.length) addEvent(project.id, 'index', 'Project index updated', summary);
+  if (added || changed || removed.length) {
+    const details = [
+      summary,
+      ...(addedPaths.length ? ['Added:', ...addedPaths.map(file => `- ${file}`)] : []),
+      ...(changedPaths.length ? ['Changed:', ...changedPaths.map(file => `- ${file}`)] : []),
+      ...(removed.length ? ['Removed:', ...removed.map(file => `- ${file.relative_path}`)] : []),
+    ].join('\n');
+    const saveChanges = database.prepare(`
+      INSERT INTO file_changes(project_id, event_id, relative_path, change_type, before_content, after_content)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const recordChangesTransaction = database.transaction(() => {
+      const eventId = addEvent(project.id, 'index', 'Project files updated', details);
+      for (const file of fileChanges) {
+        saveChanges.run(project.id, eventId, file.path, file.changeType, file.before, file.after);
+      }
+    });
+    recordChangesTransaction();
+  }
   refreshProjectSearch(project.id);
   return { scanned: candidates.length, added, changed, removed: removed.length, indexedAt: new Date().toISOString() };
 }
 
 function asProject(id: number): Project | undefined {
   return database.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Project | undefined;
+}
+
+function getReadmeContext(content: string): string[] {
+  const lines = content.split(/\r?\n/);
+  const cleanLine = (line: string) => line
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+    .replace(/<img\b[^>]*>/gi, '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .trim();
+  const isUsefulLine = (line: string) => {
+    const trimmed = cleanLine(line);
+    return trimmed && !trimmed.startsWith('![') && trimmed !== '---';
+  };
+  const firstSectionIndex = lines.findIndex(line => /^##\s+/.test(line));
+  const intro = lines
+    .slice(0, firstSectionIndex < 0 ? lines.length : firstSectionIndex)
+    .filter(isUsefulLine)
+    .filter(line => !/^#\s+/.test(line))
+    .map(cleanLine);
+  const sections: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const heading = lines[index].match(/^(#{2,3})\s+(.+)$/);
+    if (!heading || !/overview|about|what (?:is|this)|how .*?(?:works?|use)|architecture|core capabilities|features|workflow|day.to.day|project structure/i.test(heading[2])) continue;
+    const depth = heading[1].length;
+    const body: string[] = [];
+    for (let next = index + 1; next < lines.length; next += 1) {
+      const nextHeading = lines[next].match(/^(#{1,6})\s+/);
+      if (nextHeading && nextHeading[1].length <= depth) break;
+      if (isUsefulLine(lines[next])) body.push(cleanLine(lines[next]));
+    }
+    if (body.length) sections.push(`### ${cleanLine(heading[2])}`, ...body);
+  }
+  return [...intro, ...sections].slice(0, 120);
 }
 
 app.get('/api/health', (_request, response) => response.json({ ok: true }));
@@ -219,6 +305,71 @@ app.get('/api/projects/:id/dashboard', async (request, response) => {
   response.json({ project, git, events, entries, stats });
 });
 
+app.get('/api/projects/:id/file-change', async (request, response) => {
+  const project = asProject(Number(request.params.id));
+  if (!project) return response.status(404).json({ error: 'Project not found.' });
+  const relativePath = String(request.query.path ?? '');
+  if (!relativePath) return response.status(400).json({ error: 'Choose a project file.' });
+  const requestedEventId = request.query.eventId;
+  const eventId = Number(requestedEventId);
+  if (requestedEventId !== undefined && (!Number.isSafeInteger(eventId) || eventId <= 0)) {
+    return response.status(400).json({ error: 'Choose a valid project history event.' });
+  }
+  let fileChange = Number.isSafeInteger(eventId) && eventId > 0
+    ? database.prepare('SELECT relative_path, change_type, before_content, after_content FROM file_changes WHERE project_id = ? AND event_id = ? AND relative_path = ?').get(project.id, eventId, relativePath)
+    : undefined;
+  if (requestedEventId === undefined) {
+    const git = await getGitSummary(project.root_path);
+    const workingTreeChange = git.workingTreeChanges.find(change => change.path === relativePath);
+    if (workingTreeChange) {
+      const isAdded = workingTreeChange.status === '??' || workingTreeChange.status.includes('A');
+      const isRemoved = workingTreeChange.status.includes('D');
+      let afterContent = '';
+      if (!isRemoved) {
+        const absolutePath = path.resolve(project.root_path, relativePath);
+        const resolvedPath = path.relative(project.root_path, absolutePath);
+        if (resolvedPath === '..' || resolvedPath.startsWith(`..${path.sep}`) || path.isAbsolute(resolvedPath)) {
+          return response.status(400).json({ error: 'The selected file is outside the project folder.' });
+        }
+        try {
+          const actualPath = await realpath(absolutePath);
+          const actualRelativePath = path.relative(project.root_path, actualPath);
+          if (actualRelativePath === '..' || actualRelativePath.startsWith(`..${path.sep}`) || path.isAbsolute(actualRelativePath)) {
+            return response.status(400).json({ error: 'The selected file is outside the project folder.' });
+          }
+          const info = await stat(actualPath);
+          if (!info.isFile() || info.size > maxIndexedBytes) {
+            return response.status(413).json({ error: 'This file is too large to show as a text diff.' });
+          }
+          const content = await readFile(actualPath);
+          if (content.includes(0)) return response.status(415).json({ error: 'Binary files cannot be shown as text diffs.' });
+          afterContent = content.toString('utf8');
+        } catch (error) {
+          return response.status(404).json({ error: error instanceof Error ? `Could not read ${relativePath}: ${error.message}` : 'Could not read the selected file.' });
+        }
+      }
+      let beforeContent = '';
+      if (!isAdded) {
+        try {
+          const result = await execFileAsync('git', ['-C', project.root_path, '--literal-pathspecs', 'show', `HEAD:${relativePath}`], { windowsHide: true, maxBuffer: maxIndexedBytes * 2 });
+          beforeContent = result.stdout;
+        } catch (error) {
+          return response.status(500).json({ error: error instanceof Error ? `Could not read the Git version of ${relativePath}: ${error.message}` : 'Could not read the Git version of this file.' });
+        }
+      }
+      return response.json({
+        relative_path: relativePath,
+        change_type: isAdded ? 'added' : isRemoved ? 'removed' : 'changed',
+        before_content: beforeContent,
+        after_content: afterContent,
+      });
+    }
+    fileChange = database.prepare('SELECT relative_path, change_type, before_content, after_content FROM file_changes WHERE project_id = ? AND relative_path = ? ORDER BY id DESC LIMIT 1').get(project.id, relativePath);
+  }
+  if (!fileChange) return response.status(404).json({ error: 'No saved text diff is available for this file yet. Sync the project and try again.' });
+  return response.json(fileChange);
+});
+
 app.post('/api/projects/:id/index', async (request, response) => {
   const project = asProject(Number(request.params.id));
   if (!project) return response.status(404).json({ error: 'Project not found.' });
@@ -256,13 +407,103 @@ app.get('/api/projects/:id/search', (request, response) => {
   } catch { return response.json({ results: [] }); }
 });
 
-app.get('/api/projects/:id/export', (request, response) => {
+app.get('/api/projects/:id/export', async (request, response) => {
   const project = asProject(Number(request.params.id));
   if (!project) return response.status(404).json({ error: 'Project not found.' });
+  let indexedAt: string;
+  try {
+    ({ indexedAt } = await indexProject(project));
+  } catch (error) {
+    return response.status(500).json({ error: error instanceof Error ? error.message : 'Could not update the project index for export.' });
+  }
+  const git = await getGitSummary(project.root_path);
   const entries = database.prepare('SELECT kind, title, body, created_at FROM entries WHERE project_id = ? ORDER BY id DESC').all(project.id) as Array<{ kind: string; title: string; body: string; created_at: string }>;
-  const files = database.prepare('SELECT relative_path FROM files WHERE project_id = ? ORDER BY relative_path').all(project.id) as Array<{ relative_path: string }>;
+  const files = database.prepare('SELECT relative_path, content FROM files WHERE project_id = ? ORDER BY relative_path').all(project.id) as Array<{ relative_path: string; content: string }>;
   const sections: Record<string, string> = { decision: 'Architectural decisions', checkpoint: 'Task checkpoints', bug: 'Unresolved bugs', work: 'Completed work', failed: 'Failed tasks' };
-  const lines = [`# ${project.name} project context`, '', `Project path: ${project.root_path}`, `Last indexed: ${project.indexed_at ?? 'Not yet indexed'}`, '', '## Indexed files', ...files.map(file => `- ${file.relative_path}`)];
+  const readme = files.find(file => /^readme\.md$/i.test(file.relative_path))?.content;
+  const readmeContext = readme ? getReadmeContext(readme) : [];
+  const packageFile = files.find(file => /^package\.json$/i.test(file.relative_path));
+  const latestCheckpoint = entries.find(entry => entry.kind === 'checkpoint');
+  const openBugs = entries.filter(entry => entry.kind === 'bug');
+  const completedWork = entries.filter(entry => entry.kind === 'work');
+  const lines = [
+    `# ${project.name} project handoff`,
+    '',
+    `Project path: ${project.root_path}`,
+    `Last indexed: ${indexedAt}`,
+    '',
+    '## What this project is and how it works',
+    ...(readmeContext.length ? readmeContext : ['No README overview or project workflow documentation was found.']),
+    '',
+    '## Current status',
+    ...(git.available ? [
+      `- Git branch: ${git.branch}`,
+      `- Uncommitted files: ${git.changedFiles}`,
+      ...(git.lastCommit ? [`- Latest commit: ${git.lastCommit.hash} ${git.lastCommit.subject} (${git.lastCommit.age})`] : []),
+    ] : ['- Git history is unavailable for this folder.']),
+    `- Indexed text files: ${files.length}`,
+    `- Saved memories: ${entries.length}`,
+  ];
+  if (packageFile) {
+    try {
+      const manifest = JSON.parse(packageFile.content) as {
+        name?: string;
+        description?: string;
+        engines?: Record<string, string>;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+        scripts?: Record<string, string>;
+      };
+      const scripts = manifest.scripts ?? {};
+      lines.push('', '## Technology and common commands');
+      if (manifest.name) lines.push(`- Package: ${manifest.name}`);
+      if (manifest.description) lines.push(`- Description: ${manifest.description}`);
+      if (manifest.engines && Object.keys(manifest.engines).length) {
+        lines.push(`- Runtime requirements: ${Object.entries(manifest.engines).map(([name, version]) => `${name} ${version}`).join(', ')}`);
+      }
+      const dependencies = Object.keys(manifest.dependencies ?? {});
+      const devDependencies = Object.keys(manifest.devDependencies ?? {});
+      if (dependencies.length) lines.push(`- Main dependencies: ${dependencies.join(', ')}`);
+      if (devDependencies.length) lines.push(`- Development tools: ${devDependencies.join(', ')}`);
+      for (const name of ['dev', 'start', 'build', 'test', 'check']) {
+        if (scripts[name]) lines.push(`- \`npm run ${name}\`: ${scripts[name]}`);
+      }
+    } catch (error) {
+      lines.push('', '## Project manifest', '', `Could not summarize package.json: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  lines.push(
+    '',
+    '## Progress and next steps',
+    ...(latestCheckpoint
+      ? [`Latest checkpoint: **${latestCheckpoint.title}**`, '', latestCheckpoint.body]
+      : ['No checkpoint has been saved yet. Add one with completed work and next steps to guide the next session.']),
+  );
+  if (completedWork.length) {
+    lines.push('', '### Completed work notes');
+    for (const entry of completedWork) lines.push(`- **${entry.title}:** ${entry.body}`);
+  }
+  if (openBugs.length) {
+    lines.push('', '### Open bugs');
+    for (const entry of openBugs) lines.push(`- **${entry.title}:** ${entry.body}`);
+  }
+  if (git.available) {
+    lines.push('', '## Recent Git commits');
+    if (git.recentCommits.length) {
+      for (const commit of git.recentCommits) lines.push(`- ${commit.date} ${commit.hash} ${commit.subject}`);
+    } else {
+      lines.push('- No commits yet.');
+    }
+    lines.push('', '## Current changed files');
+    if (git.workingTreeChanges.length) {
+      for (const change of git.workingTreeChanges) lines.push(`- [${change.status || 'modified'}] ${change.path}`);
+    } else {
+      lines.push('- Working tree is clean.');
+    }
+  } else {
+    lines.push('', '## Current changed files', '', 'Git history is unavailable for this folder.');
+  }
+  lines.push('', '## Indexed files', ...files.map(file => `- ${file.relative_path}`));
   for (const [kind, heading] of Object.entries(sections)) {
     const selected = entries.filter(entry => entry.kind === kind);
     if (!selected.length) continue;

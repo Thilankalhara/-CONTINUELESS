@@ -1,6 +1,6 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
-  Activity, AlertCircle, ArrowDownToLine, ArrowRight, BookOpen, Check, CheckCircle2,
+  Activity, AlertCircle, ArrowDownToLine, ArrowRight, BookOpen, Check, CheckCircle2, Copy,
   ChevronDown, CircleDot, Clock3, Code2, FileCode2, FilePlus2, FolderGit2, GitBranch,
   GitCommitHorizontal, History, Lightbulb, LoaderCircle, Plus, RefreshCw, Search,
   ShieldAlert, Sparkles, X,
@@ -10,8 +10,14 @@ type EntryKind = 'decision' | 'checkpoint' | 'bug' | 'work' | 'failed';
 type Entry = { id: number; kind: EntryKind; title: string; body: string; created_at: string };
 type Project = { id: number; name: string; root_path: string; indexed_at: string | null; file_count: number; entry_count: number };
 type Event = { id: number; kind: string; summary: string; details: string; created_at: string };
+type FileChange = { relative_path: string; change_type: 'added' | 'changed' | 'removed'; before_content: string; after_content: string };
+type DiffLine = { type: 'context' | 'added' | 'removed'; text: string; oldLine?: number; newLine?: number };
 type Dashboard = {
-  project: Project; git: { available: boolean; branch: string | null; changedFiles: number; lastCommit: { hash: string; subject: string; age: string } | null };
+  project: Project; git: {
+    available: boolean; branch: string | null; changedFiles: number;
+    workingTreeChanges: Array<{ status: string; path: string }>;
+    lastCommit: { hash: string; subject: string; age: string } | null;
+  };
   events: Event[]; entries: Entry[]; stats: { files: number; decisions: number; bugs: number; checkpoints: number };
 };
 type SearchResult = { id: number; kind: string; title: string; excerpt: string; path: string };
@@ -50,6 +56,81 @@ function highlightExcerpt(excerpt: string) {
   });
 }
 
+function gitChangeClass(status: string) {
+  if (status === '??' || status.includes('A')) return 'added';
+  if (status.includes('D')) return 'removed';
+  return 'changed';
+}
+
+function buildDiffLines(before: string, after: string): DiffLine[] {
+  const oldLines = before.split(/\r?\n/);
+  const newLines = after.split(/\r?\n/);
+  if (oldLines[oldLines.length - 1] === '') oldLines.pop();
+  if (newLines[newLines.length - 1] === '') newLines.pop();
+  const columns = newLines.length + 1;
+  if ((oldLines.length + 1) * columns > 1_000_000) {
+    return [
+      ...oldLines.map((text, index) => ({ type: 'removed' as const, text, oldLine: index + 1 })),
+      ...newLines.map((text, index) => ({ type: 'added' as const, text, newLine: index + 1 })),
+    ];
+  }
+  const lengths = new Uint32Array((oldLines.length + 1) * columns);
+  for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
+    for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
+      const index = oldIndex * columns + newIndex;
+      lengths[index] = oldLines[oldIndex] === newLines[newIndex]
+        ? lengths[(oldIndex + 1) * columns + newIndex + 1] + 1
+        : Math.max(lengths[(oldIndex + 1) * columns + newIndex], lengths[index + 1]);
+    }
+  }
+  const lines: DiffLine[] = [];
+  let oldIndex = 0;
+  let newIndex = 0;
+  while (oldIndex < oldLines.length && newIndex < newLines.length) {
+    if (oldLines[oldIndex] === newLines[newIndex]) {
+      lines.push({ type: 'context', text: oldLines[oldIndex], oldLine: oldIndex + 1, newLine: newIndex + 1 });
+      oldIndex += 1;
+      newIndex += 1;
+    } else if (lengths[(oldIndex + 1) * columns + newIndex] >= lengths[oldIndex * columns + newIndex + 1]) {
+      lines.push({ type: 'removed', text: oldLines[oldIndex], oldLine: oldIndex + 1 });
+      oldIndex += 1;
+    } else {
+      lines.push({ type: 'added', text: newLines[newIndex], newLine: newIndex + 1 });
+      newIndex += 1;
+    }
+  }
+  while (oldIndex < oldLines.length) {
+    lines.push({ type: 'removed', text: oldLines[oldIndex], oldLine: oldIndex + 1 });
+    oldIndex += 1;
+  }
+  while (newIndex < newLines.length) {
+    lines.push({ type: 'added', text: newLines[newIndex], newLine: newIndex + 1 });
+    newIndex += 1;
+  }
+  return lines;
+}
+
+function renderHistoryDetails(details: string, onOpenFile: (path: string, eventId: number) => void, eventId: number) {
+  let action: 'added' | 'changed' | 'removed' | null = null;
+  return details.split(/\r?\n/).filter(Boolean).map((line, index) => {
+    const heading = line.match(/^(Added|Changed|Removed):(?:\s*(.*))?$/);
+    if (heading) {
+      action = heading[1].toLowerCase() as 'added' | 'changed' | 'removed';
+      const paths = heading[2]?.split(',').map(file => file.trim()).filter(Boolean) ?? [];
+      return <span className={`history-file-group history-file-${action}`} key={index}>
+        <strong>{heading[1]}</strong>
+        {paths.map((file, fileIndex) => <button className="history-file-path" onClick={() => onOpenFile(file, eventId)} key={`${file}-${fileIndex}`}>{file}</button>)}
+      </span>;
+    }
+    if (action && line.trimStart().startsWith('- ')) {
+      const file = line.trim().slice(2);
+      return <button className={`history-file-path history-file-${action}`} onClick={() => onOpenFile(file, eventId)} key={index}>{file}</button>;
+    }
+    action = null;
+    return <span className="history-detail-line" key={index}>{line}</span>;
+  });
+}
+
 function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -60,6 +141,12 @@ function App() {
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [dialog, setDialog] = useState(false);
+  const [fileChange, setFileChange] = useState<FileChange | null>(null);
+  const [fileDiffLines, setFileDiffLines] = useState<DiffLine[]>([]);
+  const [fileDiffLoading, setFileDiffLoading] = useState(false);
+  const [fileDiffError, setFileDiffError] = useState('');
+  const [fileDiffCopyError, setFileDiffCopyError] = useState('');
+  const fileDiffRequestId = useRef(0);
   const [kind, setKind] = useState<EntryKind>('checkpoint');
   const [entryTitle, setEntryTitle] = useState('');
   const [entryBody, setEntryBody] = useState('');
@@ -86,12 +173,16 @@ function App() {
 
   useEffect(() => {
     if (activeId === null) { setDashboard(null); return; }
-    loadDashboard(activeId).catch(reason => setError(reason.message));
-    const refreshTimer = window.setInterval(() => {
-      request(`/api/projects/${activeId}/index`, { method: 'POST' })
-        .then(() => loadDashboard(activeId))
-        .catch(reason => setError(reason.message));
-    }, 45000);
+    const syncProject = async () => {
+      try {
+        await request(`/api/projects/${activeId}/index`, { method: 'POST' });
+        await loadDashboard(activeId);
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Could not sync project.');
+      }
+    };
+    void syncProject();
+    const refreshTimer = window.setInterval(syncProject, 45000);
     return () => window.clearInterval(refreshTimer);
   }, [activeId]);
 
@@ -115,6 +206,15 @@ function App() {
     window.addEventListener('keydown', focusSearch);
     return () => window.removeEventListener('keydown', focusSearch);
   }, []);
+
+  useEffect(() => {
+    if (!fileChange) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeFileChange();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [fileChange]);
 
   async function connectProject(event: FormEvent) {
     event.preventDefault();
@@ -151,6 +251,57 @@ function App() {
       setNotice('Memory saved to this project');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save memory.'); }
     finally { setSaving(false); }
+  }
+
+  async function openFileChange(filePath: string, eventId?: number) {
+    if (activeId === null) return;
+    const requestId = ++fileDiffRequestId.current;
+    setFileChange({
+      relative_path: filePath,
+      change_type: 'changed',
+      before_content: '',
+      after_content: '',
+    });
+    setFileDiffLines([]);
+    setFileDiffLoading(true);
+    setFileDiffError('');
+    setFileDiffCopyError('');
+    const query = new URLSearchParams({ path: filePath });
+    if (eventId !== undefined) query.set('eventId', String(eventId));
+    try {
+      const change = await request<FileChange>(`/api/projects/${activeId}/file-change?${query.toString()}`);
+      if (requestId !== fileDiffRequestId.current) return;
+      setFileChange(change);
+      setFileDiffLines(buildDiffLines(change.before_content, change.after_content));
+    } catch (reason) {
+      if (requestId === fileDiffRequestId.current) {
+        setFileDiffError(reason instanceof Error ? reason.message : 'Could not load this file diff.');
+      }
+    } finally {
+      if (requestId === fileDiffRequestId.current) setFileDiffLoading(false);
+    }
+  }
+
+  function closeFileChange() {
+    fileDiffRequestId.current += 1;
+    setFileChange(null);
+    setFileDiffLoading(false);
+  }
+
+  async function copyFileDiff() {
+    if (!fileChange) return;
+    setFileDiffCopyError('');
+    const content = [
+      `--- ${fileChange.relative_path}`,
+      `+++ ${fileChange.relative_path}`,
+      ...fileDiffLines.map(line => `${line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '} ${line.text}`),
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(content);
+      setNotice('File diff copied to clipboard');
+    } catch (reason) {
+      setFileDiffCopyError(reason instanceof Error ? `Could not copy the diff: ${reason.message}` : 'Could not copy the diff to the clipboard.');
+    }
   }
 
   async function exportContext() {
@@ -245,11 +396,17 @@ function App() {
 
               <section className="history-section" id="history">
                 <div className="section-title-row history-title"><div><p className="eyebrow">A CLEAR TRAIL FOR THE NEXT SESSION</p><h2>Project history</h2></div><span className="history-count">{dashboard?.events.length ?? 0} RECENT EVENTS</span></div>
+                {dashboard?.git.available && <div className="history-working-tree">
+                  <div className="history-working-tree-heading"><strong>Updated files</strong><span>{dashboard.git.changedFiles} FILES</span></div>
+                  {dashboard.git.workingTreeChanges.length
+                    ? <ul>{dashboard.git.workingTreeChanges.map((change, index) => <li className={`history-file-${gitChangeClass(change.status)}`} key={`${change.path}-${index}`}><code>{change.status || 'M'}</code><button onClick={() => void openFileChange(change.path)}>{change.path}</button></li>)}</ul>
+                    : <p>Working tree is clean.</p>}
+                </div>}
                 <div className="history-list">{dashboard?.events.length ? dashboard.events.map((event, index) => {
                   const entry = dashboard.entries.find(item => item.title === event.summary && item.created_at === event.created_at);
                   const type = entry?.kind ?? event.kind;
                   const TypeIcon = kinds.find(item => item.id === type)?.icon ?? (type === 'index' ? RefreshCw : type === 'project' ? FolderGit2 : History);
-                  return <article className="history-item" key={event.id}><div className={`history-icon history-${type}`}><TypeIcon size={15} /></div><div className="history-content"><div className="history-meta"><strong>{event.summary}</strong><span className="history-type">{type.replace('-', ' ')}</span></div><p>{event.details}</p></div><time>{timeAgo(event.created_at)}</time>{index === 0 && <span className="latest-label">LATEST</span>}</article>;
+                  return <article className="history-item" key={event.id}><div className={`history-icon history-${type}`}><TypeIcon size={15} /></div><div className="history-content"><div className="history-meta"><strong>{event.summary}</strong><span className="history-type">{type.replace('-', ' ')}</span></div><div className="history-details">{renderHistoryDetails(event.details, (filePath, fileEventId) => void openFileChange(filePath, fileEventId), event.id)}</div></div><time>{timeAgo(event.created_at)}</time>{index === 0 && <span className="latest-label">LATEST</span>}</article>;
                 }) : <div className="history-empty"><Clock3 size={19} /><div><strong>The story starts here.</strong><span>Sync your project or save the first decision to begin a useful history.</span></div><button onClick={() => { setKind('decision'); setDialog(true); }}>Add a decision <ArrowRight size={14} /></button></div>}</div>
               </section>
               <footer className="page-footer"><span>CONTINUELESS <span>·</span> PORTABLE PROJECT MEMORY</span><span><span className="footer-dot" /> ALL DATA STORED LOCALLY</span></footer>
@@ -257,6 +414,22 @@ function App() {
           )}
         </div>
       </main>
+
+      {fileChange && <div className="modal-backdrop diff-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeFileChange(); }}>
+        <section className="diff-dialog" role="dialog" aria-modal="true" aria-labelledby="diff-title">
+          <div className="diff-dialog-header">
+            <div><p className="eyebrow">FILE CHANGE · {fileChange.change_type.toUpperCase()}</p><h2 id="diff-title">{fileChange.relative_path}</h2></div>
+            <div className="diff-dialog-actions"><button type="button" className="subtle-button" onClick={() => void copyFileDiff()} disabled={fileDiffLoading || Boolean(fileDiffError)}><Copy size={14} /> Copy diff</button><button type="button" className="dialog-close" onClick={closeFileChange} aria-label="Close diff"><X size={18} /></button></div>
+          </div>
+          {fileDiffError
+            ? <div className="diff-message diff-error" role="alert">{fileDiffError}</div>
+            : fileDiffLoading
+              ? <div className="diff-message">Loading file changes…</div>
+              : fileDiffLines.length
+                ? <><div className="diff-code" role="region" aria-label={`Changes in ${fileChange.relative_path}`}>{fileDiffLines.map((line, index) => <div className={`diff-line diff-${line.type}`} key={`${line.type}-${index}`}><span className="diff-line-number">{line.oldLine ?? ''}</span><span className="diff-line-number">{line.newLine ?? ''}</span><span className="diff-line-marker">{line.type === 'added' ? '+' : line.type === 'removed' ? '−' : ' '}</span><code>{line.text || ' '}</code></div>)}</div>{fileDiffCopyError && <div className="diff-message diff-error" role="alert">{fileDiffCopyError}</div>}</>
+                : <div className="diff-message">This file has no text lines to display.</div>}
+        </section>
+      </div>}
 
       {dialog && <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setDialog(false); }}><form className="memory-dialog" onSubmit={saveEntry}><div className="dialog-top"><div><p className="eyebrow">ADD TO PROJECT MEMORY</p><h2>Save what matters<span>.</span></h2></div><button type="button" className="dialog-close" onClick={() => setDialog(false)} aria-label="Close"><X size={18} /></button></div><label className="field-label">MEMORY TYPE</label><div className="kind-picker">{kinds.map(item => <button type="button" key={item.id} className={kind === item.id ? 'kind-active' : ''} onClick={() => setKind(item.id)}><item.icon size={15} />{item.label}</button>)}</div><label className="field-label" htmlFor="memory-title">TITLE</label><input id="memory-title" className="dialog-input" autoFocus value={entryTitle} onChange={event => setEntryTitle(event.target.value)} placeholder={kind === 'decision' ? 'Why are we choosing this?' : 'A short, useful headline'} required maxLength={160} /><label className="field-label" htmlFor="memory-body">DETAILS</label><textarea id="memory-body" className="dialog-input dialog-textarea" value={entryBody} onChange={event => setEntryBody(event.target.value)} placeholder="Add enough context that future-you (or another agent) can pick up the thread..." required rows={5} /><div className="dialog-footer"><span><span className="footer-dot" /> SAVED ON THIS DEVICE</span><button className="primary-button" type="submit" disabled={saving}>{saving ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Save memory</button></div></form></div>}
 
