@@ -22,7 +22,8 @@ const textExtensions = new Set([
   '.rs', '.sh', '.sql', '.svg', '.toml', '.ts', '.tsx', '.txt', '.vue',
   '.xml', '.yaml', '.yml', '.zsh', '.env', '.gitignore', '.dockerignore',
 ]);
-const maxIndexedBytes = 2 * 1024 * 1024;
+const maxIndexedBytes = 16 * 1024 * 1024;
+const maxDiffBytes = 16 * 1024 * 1024;
 
 function isGeneratedOutputPath(relativePath: string) {
   return relativePath.split(/[\\/]/).some(segment => segment === 'release' || segment.startsWith('release-'));
@@ -77,6 +78,11 @@ database.exec(`
     change_type TEXT NOT NULL CHECK(change_type IN ('added','changed','removed')),
     before_content TEXT NOT NULL,
     after_content TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS history_backups (
+    project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    snapshot TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS file_changes_project_path ON file_changes(project_id, relative_path, id DESC);
   CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
@@ -306,7 +312,18 @@ app.get('/api/projects/:id/dashboard', async (request, response) => {
   if (!project) return response.status(404).json({ error: 'Project not found.' });
   const [git, events, entries, stats] = await Promise.all([
     getGitSummary(project.root_path),
-    Promise.resolve(database.prepare('SELECT * FROM events WHERE project_id = ? ORDER BY id DESC LIMIT 24').all(project.id)),
+    Promise.resolve(database.prepare(`SELECT e.* FROM events e
+      WHERE e.project_id = ? AND (
+        e.kind != 'index' OR EXISTS (
+          SELECT 1 FROM file_changes fc
+          WHERE fc.project_id = e.project_id AND fc.event_id = e.id
+            AND fc.relative_path NOT LIKE 'release/%'
+            AND fc.relative_path NOT LIKE '%/release/%'
+            AND fc.relative_path NOT LIKE 'release-%'
+            AND fc.relative_path NOT LIKE '%/release-%'
+        )
+      )
+      ORDER BY e.id DESC LIMIT 24`).all(project.id) as Array<{ id: number; project_id: number; kind: string; summary: string; details: string; created_at: string }>),
     Promise.resolve(database.prepare('SELECT * FROM entries WHERE project_id = ? ORDER BY id DESC LIMIT 30').all(project.id)),
     Promise.resolve(database.prepare(`SELECT
       (SELECT COUNT(*) FROM files WHERE project_id = ?) AS files,
@@ -314,14 +331,81 @@ app.get('/api/projects/:id/dashboard', async (request, response) => {
       (SELECT COUNT(*) FROM entries WHERE project_id = ? AND kind = 'bug') AS bugs,
       (SELECT COUNT(*) FROM entries WHERE project_id = ? AND kind = 'checkpoint') AS checkpoints`,).get(project.id, project.id, project.id, project.id)),
   ]);
-  response.json({ project, git, events, entries, stats });
+  const visibleEvents = events.flatMap(event => {
+    if (event.kind !== 'index') return [event];
+    const changes = database.prepare('SELECT relative_path, change_type FROM file_changes WHERE project_id = ? AND event_id = ?')
+      .all(project.id, event.id) as Array<{ relative_path: string; change_type: 'added' | 'changed' | 'removed' }>;
+    const visibleChanges = changes.filter(change => !isGeneratedOutputPath(change.relative_path));
+    if (!visibleChanges.length) return [];
+    const counts = { added: 0, changed: 0, removed: 0 };
+    for (const change of visibleChanges) counts[change.change_type] += 1;
+    const details = [
+      `${counts.added} added, ${counts.changed} changed, ${counts.removed} removed`,
+      ...(['added', 'changed', 'removed'] as const).flatMap(changeType => {
+        const paths = visibleChanges.filter(change => change.change_type === changeType).map(change => change.relative_path);
+        return paths.length ? [`${changeType[0].toUpperCase()}${changeType.slice(1)}:`, ...paths.map(file => `- ${file}`)] : [];
+      }),
+    ].join('\n');
+    return [{ ...event, summary: 'Project files updated', details }];
+  }).slice(0, 24);
+  const historyBackupAvailable = Boolean(database.prepare('SELECT 1 FROM history_backups WHERE project_id = ?').get(project.id));
+  response.json({ project, git, events: visibleEvents, entries, stats, historyBackupAvailable });
 });
 
 app.delete('/api/projects/:id/history', (request, response) => {
   const project = asProject(Number(request.params.id));
   if (!project) return response.status(404).json({ error: 'Project not found.' });
-  const result = database.prepare('DELETE FROM events WHERE project_id = ?').run(project.id);
-  response.json({ cleared: result.changes });
+  const events = database.prepare('SELECT id, kind, summary, details, created_at FROM events WHERE project_id = ?').all(project.id);
+  const changes = database.prepare('SELECT event_id, relative_path, change_type, before_content, after_content FROM file_changes WHERE project_id = ?').all(project.id);
+  const clearHistory = database.transaction(() => {
+    if (events.length) {
+      database.prepare(`INSERT INTO history_backups(project_id, snapshot) VALUES (?, ?)
+        ON CONFLICT(project_id) DO UPDATE SET snapshot = excluded.snapshot, created_at = CURRENT_TIMESTAMP`)
+        .run(project.id, JSON.stringify({ events, changes }));
+    }
+    return database.prepare('DELETE FROM events WHERE project_id = ?').run(project.id).changes;
+  });
+  response.json({ cleared: clearHistory(), canRestore: events.length > 0 });
+});
+
+app.post('/api/projects/:id/history/restore', (request, response) => {
+  const project = asProject(Number(request.params.id));
+  if (!project) return response.status(404).json({ error: 'Project not found.' });
+  const backup = database.prepare('SELECT snapshot FROM history_backups WHERE project_id = ?').get(project.id) as { snapshot: string } | undefined;
+  if (!backup) return response.status(404).json({ error: 'There is no cleared history to restore.' });
+  try {
+    const snapshot = JSON.parse(backup.snapshot) as {
+      events: Array<{ id: number; kind: string; summary: string; details: string; created_at: string }>;
+      changes: Array<{ event_id: number; relative_path: string; change_type: 'added' | 'changed' | 'removed'; before_content: string; after_content: string }>;
+    };
+    const restoreHistory = database.transaction(() => {
+      const eventIds = new Map<number, number>();
+      const insertWithId = database.prepare('INSERT INTO events(id, project_id, kind, summary, details, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+      const insertNew = database.prepare('INSERT INTO events(project_id, kind, summary, details, created_at) VALUES (?, ?, ?, ?, ?)');
+      for (const event of snapshot.events) {
+        if (!database.prepare('SELECT 1 FROM events WHERE id = ?').get(event.id)) {
+          insertWithId.run(event.id, project.id, event.kind, event.summary, event.details, event.created_at);
+          eventIds.set(event.id, event.id);
+        } else {
+          const result = insertNew.run(project.id, event.kind, event.summary, event.details, event.created_at);
+          eventIds.set(event.id, Number(result.lastInsertRowid));
+        }
+      }
+      const insertChange = database.prepare(`INSERT INTO file_changes(project_id, event_id, relative_path, change_type, before_content, after_content)
+        VALUES (?, ?, ?, ?, ?, ?)`);
+      for (const change of snapshot.changes) {
+        const eventId = eventIds.get(change.event_id);
+        if (eventId !== undefined) {
+          insertChange.run(project.id, eventId, change.relative_path, change.change_type, change.before_content, change.after_content);
+        }
+      }
+      database.prepare('DELETE FROM history_backups WHERE project_id = ?').run(project.id);
+      return snapshot.events.length;
+    });
+    response.json({ restored: restoreHistory() });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? `Could not restore project history: ${error.message}` : 'Could not restore project history.' });
+  }
 });
 
 app.get('/api/projects/:id/file-change', async (request, response) => {
@@ -329,6 +413,9 @@ app.get('/api/projects/:id/file-change', async (request, response) => {
   if (!project) return response.status(404).json({ error: 'Project not found.' });
   const relativePath = String(request.query.path ?? '');
   if (!relativePath) return response.status(400).json({ error: 'Choose a project file.' });
+  if (isGeneratedOutputPath(relativePath)) {
+    return response.status(415).json({ error: 'Generated release files are excluded from project history.' });
+  }
   const requestedEventId = request.query.eventId;
   const eventId = Number(requestedEventId);
   if (requestedEventId !== undefined && (!Number.isSafeInteger(eventId) || eventId <= 0)) {
@@ -357,7 +444,7 @@ app.get('/api/projects/:id/file-change', async (request, response) => {
             return response.status(400).json({ error: 'The selected file is outside the project folder.' });
           }
           const info = await stat(actualPath);
-          if (!info.isFile() || info.size > maxIndexedBytes) {
+          if (!info.isFile() || info.size > maxDiffBytes) {
             return response.status(413).json({ error: 'This file is too large to show as a text diff.' });
           }
           const content = await readFile(actualPath);
@@ -370,7 +457,7 @@ app.get('/api/projects/:id/file-change', async (request, response) => {
       let beforeContent = '';
       if (!isAdded) {
         try {
-          const result = await execFileAsync('git', ['-C', project.root_path, '--literal-pathspecs', 'show', `HEAD:${relativePath}`], { windowsHide: true, maxBuffer: maxIndexedBytes * 2 });
+          const result = await execFileAsync('git', ['-C', project.root_path, '--literal-pathspecs', 'show', `HEAD:${relativePath}`], { windowsHide: true, maxBuffer: maxDiffBytes * 2 });
           beforeContent = result.stdout;
         } catch (error) {
           return response.status(500).json({ error: error instanceof Error ? `Could not read the Git version of ${relativePath}: ${error.message}` : 'Could not read the Git version of this file.' });

@@ -104,3 +104,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .diff-code .diff-message { padding: 7px 68px; color: #929d94; font: 10px var(--mono); background: #f5f7f3; }
 .diff-code .diff-notice { color: #a34f42; white-space: normal; font-family: var(--display); font-size: 11px; }
 .diff-error { color: #a34f42; }
+.history-title { position: sticky; top: 58px; z-index: 4; align-items: center; margin: 0; padding: 11px 6px; border: 1px solid var(--line); background: #f2f4ef; }
+.history-actions { flex-wrap: wrap; justify-content: flex-end; }
+.history-clear, .history-restore { min-height: 30px; padding: 6px 9px; border: 1px solid #e2c9c2; border-radius: 3px; background: #fffaf8; }
+.history-restore { color: #47765c; border-color: #cbdccd; background: #f7fbf6; }
+.history-clear:hover:not(:disabled), .history-restore:hover:not(:disabled) { background: #fff; }
+.history-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.history-count { white-space: nowrap; }
+@media (max-width: 480px) {
+  .history-title { top: 52px; align-items: flex-start; flex-wrap: wrap; }
+  .history-actions { justify-content: flex-start; gap: 6px; }
+}

@@ -19,6 +19,7 @@ type Dashboard = {
     lastCommit: { hash: string; subject: string; age: string } | null;
   };
   events: Event[]; entries: Entry[]; stats: { files: number; decisions: number; bugs: number; checkpoints: number };
+  historyBackupAvailable: boolean;
 };
 type SearchResult = { id: number; kind: string; title: string; excerpt: string; path: string };
 
@@ -249,6 +250,7 @@ function App() {
   const [fileDiffError, setFileDiffError] = useState('');
   const [fileDiffCopyError, setFileDiffCopyError] = useState('');
   const fileDiffRequestId = useRef(0);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [kind, setKind] = useState<EntryKind>('checkpoint');
   const [entryTitle, setEntryTitle] = useState('');
   const [entryBody, setEntryBody] = useState('');
@@ -408,14 +410,32 @@ function App() {
   }
 
   async function clearHistory() {
-    if (activeId === null || !window.confirm('Clear this project’s history and saved file diffs? Saved memories and indexed project files will not be deleted.')) return;
+    if (activeId === null || !window.confirm('Clean this project history? You can restore it afterward. Saved memories and indexed project files will not be deleted.')) return;
+    setHistoryBusy(true);
     setError('');
     try {
       const result = await request<{ cleared: number }>(`/api/projects/${activeId}/history`, { method: 'DELETE' });
       await loadDashboard(activeId);
-      setNotice(`Cleared ${result.cleared} history events. Saved memories and indexed files were kept.`);
+      setNotice(`Cleaned ${result.cleared} history events. Use Restore history to bring them back.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not clear project history.');
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
+
+  async function restoreHistory() {
+    if (activeId === null || !window.confirm('Restore the most recently cleaned project history?')) return;
+    setHistoryBusy(true);
+    setError('');
+    try {
+      const result = await request<{ restored: number }>(`/api/projects/${activeId}/history/restore`, { method: 'POST' });
+      await loadDashboard(activeId);
+      setNotice(`Restored ${result.restored} history events.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not restore project history.');
+    } finally {
+      setHistoryBusy(false);
     }
   }
 
@@ -510,7 +530,7 @@ function App() {
               </section>
 
               <section className="history-section" id="history">
-                <div className="section-title-row history-title"><div><p className="eyebrow">A CLEAR TRAIL FOR THE NEXT SESSION</p><h2>Project history</h2></div><div className="history-actions">{dashboard?.events.length ? <button className="text-button history-clear" onClick={() => void clearHistory()}><Trash2 size={13} /> Clear history</button> : null}<span className="history-count">{dashboard?.events.length ?? 0} RECENT EVENTS</span></div></div>
+                <div className="section-title-row history-title"><div><p className="eyebrow">A CLEAR TRAIL FOR THE NEXT SESSION</p><h2>Project history</h2></div><div className="history-actions"><button className="text-button history-clear" onClick={() => void clearHistory()} disabled={historyBusy || !dashboard?.events.length}><Trash2 size={13} /> Clean history</button><button className="text-button history-restore" onClick={() => void restoreHistory()} disabled={historyBusy || !dashboard?.historyBackupAvailable}><History size={13} /> Restore history</button><span className="history-count">{dashboard?.events.length ?? 0} RECENT EVENTS</span></div></div>
                 {dashboard?.git.available && <div className="history-working-tree">
                   <div className="history-working-tree-heading"><strong>Updated files</strong><span>{dashboard.git.changedFiles} FILES</span></div>
                   {dashboard.git.workingTreeChanges.length
