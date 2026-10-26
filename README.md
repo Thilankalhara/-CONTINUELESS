@@ -37,13 +37,13 @@ Your project files, index, and saved memories stay on your machine. CONTINUELESS
 ## Screenshots
 
 <p align="center">
-  <img src="screenshots/dashboard.png" alt="CONTINUELESS project dashboard with project status, indexed file and memory counts, and knowledge search" width="400">
+  <img src="screenshots/dashboard.png" alt="CONTINUELESS project dashboard with project status, indexed file and memory counts, and knowledge search" width="800">
 </p>
 
 <p align="center"><em>Project dashboard: see project status and find indexed files and saved memories.</em></p>
 
 <p align="center">
-  <img src="screenshots/knowledge-search.png" alt="CONTINUELESS knowledge search showing searchable project context" width="400">
+  <img src="screenshots/knowledge-search.png" alt="CONTINUELESS knowledge search showing searchable project context" width="800">
 </p>
 
 <p align="center"><em>Search project files and notes together from the local index.</em></p>
